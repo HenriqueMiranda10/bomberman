@@ -1,0 +1,372 @@
+/**
+    Estrutura inicial para um jogo
+    versão: 0.1 (Prof. Alex, Adaptado Prof. Felski)
+    Com inimigos simples adicionados
+*/
+#include <iostream>
+#include <windows.h>
+#include <conio.h>
+#include <cstdlib>
+#include <ctime>
+
+using namespace std;
+
+/// --- Struct da bomba ---
+struct Bomba {
+    int x, y;     // posição no mapa
+    int inicio;   // "tempo" (tick) em que foi plantada
+    bool ativa;   // existe bomba plantada?
+}; // ; é obrigatório
+
+/// struct dos inimigos
+struct Inimigo {
+    int x, y;        // posição no mapa
+    bool vivo;       // se o inimigo está vivo
+    int direcao;     // direção atual do movimento (0-3)
+    int contador;    // contador para mudança de direção
+};
+/// Nome do Usuário
+void pedirNome(string &nome) {
+    cout << "Digite seu Nome: ";
+    cin.ignore(); // limpa o buffer se necessário
+    getline(cin, nome);
+}
+
+
+
+
+int main()
+{
+    string nome;
+    pedirNome(nome); // chamada da função
+    cout << "Digite seu Nome: " << nome << "!" << endl;
+
+
+
+
+    // Inicializa o gerador de números aleatórios
+    srand(time(0));
+
+
+    ///ALERTA: NAO MODIFICAR O TRECHO DE CODIGO, A SEGUIR.
+        //INICIO: COMANDOS PARA QUE O CURSOR NAO FIQUE PISCANDO NA TELA
+        HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+        CONSOLE_CURSOR_INFO cursorInfo;
+        GetConsoleCursorInfo(out, &cursorInfo);
+        cursorInfo.bVisible = false; // set the cursor visibility
+        SetConsoleCursorInfo(out, &cursorInfo);
+        //FIM: COMANDOS PARA QUE O CURSOR NAO FIQUE PISCANDO NA TELA
+        //INICIO: COMANDOS PARA REPOSICIONAR O CURSOR NO INICIO DA TELA
+        short int CX = 0, CY = 0;
+        COORD coord;
+        coord.X = CX;
+        coord.Y = CY;
+        //FIM: COMANDOS PARA REPOSICIONAR O CURSOR NO INICIO DA TELA
+    ///ALERTA: NAO MODIFICAR O TRECHO DE CODIGO, ACIMA.
+
+    int m[13][32] = {
+        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+        1,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,0,0,1,
+        1,0,1,0,0,1,0,0,1,2,2,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,2,2,1,0,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,2,2,0,0,1,
+        1,2,1,0,0,1,0,0,1,2,2,1,0,0,1,2,2,1,0,0,1,0,0,1,0,0,1,2,2,1,0,1,
+        1,2,0,0,0,0,0,0,0,2,2,0,0,0,0,2,2,0,0,0,0,2,2,2,2,2,2,2,2,2,0,1,
+        1,2,1,0,0,1,0,0,1,2,2,1,0,0,1,2,2,1,0,0,1,0,0,1,2,2,1,2,2,1,0,1,
+        1,2,0,0,0,0,2,2,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,2,2,0,0,0,0,0,1,
+        1,2,1,0,0,1,2,2,1,0,0,1,0,0,1,0,0,1,0,0,1,2,2,1,0,0,1,0,0,1,0,1,
+        1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1,
+        1,0,1,2,2,1,2,2,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,1,
+        1,0,0,0,2,2,2,2,2,0,0,0,0,0,0,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,1,
+        1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+    };
+
+    // --- Timer/Explosão por "ticks" ---
+    int tempo = 0;          // relógio do jogo
+    Bomba bomba;            // 1 bomba por vez (simples)
+    bomba.ativa = false;
+
+    // Cada célula com explosão (4) guarda quando ela deve sumir
+    int explEnd[13][32] = { 0 }; // 0 = sem explosão; >0 = tick de término
+
+    const int NUM_INIMIGOS = 3;
+    Inimigo inimigos[NUM_INIMIGOS];
+
+    // inicializar inimigos em posições fixas (garantindo que são caminhos)
+    inimigos[0] = { 5, 5, true, 0, 0 };
+    inimigos[1] = { 11, 1, true, 0, 0 };
+    inimigos[2] = { 11, 30, true, 0, 0 };
+
+    // Posição inicial do personagem
+    int x = 1, y = 2;
+    // Tecla pressionada
+    char tecla;
+
+    while (true) {
+        tempo++; // cada loop é 1 "tick"
+
+        // --- Atualiza bombas: explode após 50 ticks ---
+        if (bomba.ativa) {
+            if (tempo - bomba.inicio >= 50) {
+                int bx = bomba.x, by = bomba.y;
+                int raio = 1; // alcance
+
+                // Centro
+                m[bx][by] = 4;
+                explEnd[bx][by] = tempo + 10; // ticks desse krai
+
+                // CIMA
+                for (int r = 1; r <= raio; r++) {
+                    int nx = bx - r, ny = by;
+                    if (nx < 0) break;
+                    if (m[nx][ny] == 1) break;             // sólida
+                    if (m[nx][ny] == 2) {                  // frágil igual papel
+                        m[nx][ny] = 4;
+                        explEnd[nx][ny] = tempo + 10;
+                        break;
+                    }
+                    // verifica se atingiu um inimigo
+                    for (int i = 0; i < NUM_INIMIGOS; i++) {
+                        if (inimigos[i].vivo && inimigos[i].x == nx && inimigos[i].y == ny) {
+                            inimigos[i].vivo = false;
+                            break;
+                        }
+                    }
+                    m[nx][ny] = 4;
+                    explEnd[nx][ny] = tempo + 10;
+                }
+
+                // BAIXO
+                for (int r = 1; r <= raio; r++) {
+                    int nx = bx + r, ny = by;
+                    if (nx >= 13) break;
+                    if (m[nx][ny] == 1) break;
+                    if (m[nx][ny] == 2) {
+                        m[nx][ny] = 4;
+                        explEnd[nx][ny] = tempo + 10;
+                        break;
+                    }
+                    // verifica se atingiu um inimigo
+                    for (int i = 0; i < NUM_INIMIGOS; i++) {
+                        if (inimigos[i].vivo && inimigos[i].x == nx && inimigos[i].y == ny) {
+                            inimigos[i].vivo = false;
+                            break;
+                        }
+                    }
+                    m[nx][ny] = 4;
+                    explEnd[nx][ny] = tempo + 10;
+                }
+
+                // ESQUERDA
+                for (int r = 1; r <= raio; r++) {
+                    int nx = bx, ny = by - r;
+                    if (ny < 0) break;
+                    if (m[nx][ny] == 1) break;
+                    if (m[nx][ny] == 2) {
+                        m[nx][ny] = 4;
+                        explEnd[nx][ny] = tempo + 10;
+                        break;
+                    }
+                    // verifica se atingiu um inimigo
+                    for (int i = 0; i < NUM_INIMIGOS; i++) {
+                        if (inimigos[i].vivo && inimigos[i].x == nx && inimigos[i].y == ny) {
+                            inimigos[i].vivo = false;
+                            break;
+                        }
+                    }
+                    m[nx][ny] = 4;
+                    explEnd[nx][ny] = tempo + 10;
+                }
+
+                // DIREITA
+                for (int r = 1; r <= raio; r++) {
+                    int nx = bx, ny = by + r;
+                    if (ny >= 32) break;
+                    if (m[nx][ny] == 1) break;
+                    if (m[nx][ny] == 2) {
+                        m[nx][ny] = 4;
+                        explEnd[nx][ny] = tempo + 10;
+                        break;
+                    }
+                    // verifica se atingiu um inimigo
+                    for (int i = 0; i < NUM_INIMIGOS; i++) {
+                        if (inimigos[i].vivo && inimigos[i].x == nx && inimigos[i].y == ny) {
+                            inimigos[i].vivo = false;
+                            break;
+                        }
+                    }
+                    m[nx][ny] = 4;
+                    explEnd[nx][ny] = tempo + 10;
+                }
+
+                bomba.ativa = false;
+            }
+        }
+
+        // limpa explosões vencidas
+        for (int i = 0; i < 13; i++) {
+            for (int j = 0; j < 32; j++) {
+                if (m[i][j] == 4 && explEnd[i][j] != 0 && tempo >= explEnd[i][j]) {
+                    m[i][j] = 0;        // volta a ser caminho
+                    explEnd[i][j] = 0;  // limpa timer da célula
+                }
+            }
+        }
+
+        //funcao
+
+        // movimentação dos inimigos
+        for (int i = 0; i < NUM_INIMIGOS; i++) {
+            if (!inimigos[i].vivo) continue;
+
+            // muda a direção ou se está parado
+            inimigos[i].contador++;
+            if (inimigos[i].contador > 20 + (i+5)) {
+                inimigos[i].direcao = (inimigos[i].direcao + 1) % 4;
+                inimigos[i].contador = 0;
+            }
+
+            int nx = inimigos[i].x;
+            int ny = inimigos[i].y;
+
+            // calcula nova posição baseada na direção
+            switch (inimigos[i].direcao) {
+            case 0: nx--; break; // Cima
+            case 1: nx++; break; // Baixo
+            case 2: ny--; break; // Esquerda
+            case 3: ny++; break; // Direita
+            }
+
+            // verifica se pode mover para a nova posição
+            if (nx >= 0 && nx < 13 && ny >= 0 && ny < 32 && m[nx][ny] == 0) {
+                inimigos[i].x = nx;
+                inimigos[i].y = ny;
+            }
+        }
+
+        // game Over da bomba
+        if (m[x][y] == 4) {
+            system("cls");
+            cout << "\n\n   \033[31;1mF\033[0m - voce foi atingido pela explosao!\n";
+            Sleep(2000);
+            return 0;
+        }
+
+        // game over por inimigo
+        for (int i = 0; i < NUM_INIMIGOS; i++) {
+            if (inimigos[i].vivo && inimigos[i].x == x && inimigos[i].y == y) {
+                system("cls");
+                cout << "\n\n   \033[31;1mF\033[0m - um inimigo te pegou!\n";
+                Sleep(2000);
+                return 0;
+            }
+        }
+
+        // verifica se todos os inimigos foram derrotados
+        bool todosDerrotados = true;
+        for (int i = 0; i < NUM_INIMIGOS; i++) {
+            if (inimigos[i].vivo) {
+                todosDerrotados = false;
+                break;
+            }
+        }
+
+        if (todosDerrotados) {
+            system("cls");
+            cout << "\n\n   \033[32;1mPARABENS\033[0m - voce derrotou todos os inimigos!\n";
+            Sleep(2000);
+            return 0;
+        }
+
+        ///Posiciona a escrita no inicio do console
+        SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
+
+    //funcao
+        /// Imprime o jogo: mapa e personagem.
+        for (int i = 0; i < 13; i++) {
+            for (int j = 0; j < 32; j++) {
+                bool temInimigo = false;
+                for (int k = 0; k < NUM_INIMIGOS; k++) {
+                    if (inimigos[k].vivo && inimigos[k].x == i && inimigos[k].y == j) {
+                        cout << "\033[31;1m" << "X"; // inimigo
+                        temInimigo = true;
+                        break;
+                    }
+                }
+
+                if (temInimigo) {
+                    // já imprimiu o inimigo, continua para próxima célula
+                    continue;
+                }
+                else if (i == x && j == y) {
+                    cout << "\033[32;2m" << char(36); // personagem
+                }
+                else {
+                    switch (m[i][j]) {
+                    case 0: cout << " "; break;                           // caminho
+                    case 1: cout << "\033[30;2m" << char(219); break;    // parede sólida
+                    case 2: cout << "\033[34;1m" << char(178); break;    // parede frágil
+                    case 3: cout << "\033[31;1m" << char(42); break;    // bomba
+                    case 4: cout << "\033[93m" << char(35); break;    // explosão
+                    }
+                }
+            }
+            cout << "\n";
+        } // fim do mapa
+
+        ///executa os movimentos
+        if (_kbhit()) {
+            tecla = getch();
+            switch (tecla)
+            {
+            case 72: case 'w': /// cima
+                if (x - 1 >= 0 && m[x - 1][y] != 1 && m[x - 1][y] != 2 && m[x - 1][y] != 3) {
+                    x--;
+                }
+                break;
+
+            case 80: case 's': /// baixo
+                if (x + 1 < 13 && m[x + 1][y] != 1 && m[x + 1][y] != 2 && m[x + 1][y] != 3) {
+                    x++;
+                }
+                break;
+
+            case 75: case 'a': /// esquerda
+                if (y - 1 >= 0 && m[x][y - 1] != 1 && m[x][y - 1] != 2 && m[x][y - 1] != 3) {
+                    y--;
+                }
+                break;
+
+            case 77: case 'd': /// direita
+                if (y + 1 < 32 && m[x][y + 1] != 1 && m[x][y + 1] != 2 && m[x][y + 1] != 3) {
+                    y++;
+                }
+                break;
+
+            case 32: { // SPACE - planta bomba
+                if (!bomba.ativa && m[x][y] == 0) {
+                    m[x][y] = 3;           // bomba
+                    bomba.x = x;
+                    bomba.y = y;
+                    bomba.inicio = tempo;
+                    bomba.ativa = true;
+                }
+                break;
+            }
+            }
+        }
+
+        Sleep(16);
+    } // fim do laço do jogo
+
+
+
+    system("cls");
+
+    cout << "Parabens voce zerou o jogo " << nome << endl;
+
+    return 0;
+} // fim main
+
+
+
+
