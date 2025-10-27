@@ -1,6 +1,6 @@
 /**
     Estrutura inicial para um jogo
-    versão: 0.1 (Prof. Alex, Adaptado Prof. Felski)
+    versão: Completa (Prof. Alex, Adaptado Por Henrique De Queiroz Miranda)
 */
 #include <iostream>
 #include <windows.h>
