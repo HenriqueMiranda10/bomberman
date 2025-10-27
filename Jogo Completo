@@ -1,0 +1,1298 @@
+/**
+    Estrutura inicial para um jogo
+    versão: 0.1 (Prof. Alex, Adaptado Prof. Felski)
+*/
+#include <iostream>
+#include <windows.h>
+#include <conio.h>
+#include <cstdlib>
+#include <ctime>
+#include <cstring>
+#include <chrono>
+#include <utility>
+#include <fstream>
+
+
+using namespace std;
+
+
+// Constantes para dificuldade (para os níveis)
+const int FACIL = 1;
+const int MEDIO = 2;
+const int DIFICIL = 3;
+
+//--------------------------Menu-------------------------------
+void mostrarMenu() {
+    system("cls");
+    cout << "\n\n";
+    cout << "  ===============================\n";
+    cout << "       \033[36;1mBOMBERMAN - MENU\033[0m\n";
+    cout << "  ===============================\n";
+    cout << "    1. Iniciar Jogo (1 Jogador)\n";
+    cout << "    2. Iniciar Jogo (2 Jogadores - PVP)\n";
+    cout << "    3. Instrucoes\n";
+    cout << "    4. Sobre o jogo\n";
+    cout << "    5. Ranking\n";
+    cout << "    6. Como a pontuacao funciona\n";
+    cout << "    7. Sair\n";
+    cout << "  ===============================\n";
+    cout << "    Escolha uma opcao: ";
+}
+
+void mostrarInstrucoes() {
+    system("cls");
+    cout << "\n\033[33;1mInstrucoes:\033[0m\n";
+    cout << " - Use W, A, S, D ou setas para mover o jogador\n";
+    cout << " - Pressione ESPACO para plantar bomba\n";
+    cout << " - Destrua blocos e inimigos com as bombas\n";
+    cout << " - Pegue Power-Ups (?) para melhorar habilidades\n";
+    cout << " - Cuidado com as explosoes e inimigos!\n";
+    cout << "\n\033[33;1mPlayer 2 (PVP):\033[0m\n";
+    cout << " - Use I, J, K, L para mover o jogador 2\n";
+    cout << " - Pressione U para plantar bomba (jogador 2)\n";
+    cout << "\nPressione qualquer tecla para voltar ao menu...\n";
+    getch();
+}
+
+void mostrarsobreojogo() {
+    system("cls");
+    cout << "\n\033[33;1m=== SOBRE O JOGO ===\033[0m\n\n";
+    cout << "Bomberman e uma classica serie de jogos de estrategia e acao, criada pela\n";
+    cout << "empresa japonesa Hudson Soft. O jogo original foi lancado em 1983, e desde\n";
+    cout << "entao a franquia ganhou mais de 60 titulos para diversas plataformas.\n\n";
+    cout << "No jogo, o jogador controla um personagem que deve plantar bombas para\n";
+    cout << "destruir obstaculos, derrotar inimigos e coletar power-ups. A jogabilidade\n";
+    cout << "combina elementos de logica, posicionamento e tempo de reacao.\n\n";
+    cout << "Esta versao e uma adaptacao academica do classico Bomberman, com elementos\n";
+    cout << "adicionados como inimigos simples, power-ups aleatorios e logica de explosao\n";
+    cout << "baseada em tempo real.\n";
+
+    cout << "\n\033[90mDesenvolvido por  - Henrique de Queiroz Miranda / Gian Lucas Militao / Taynan Vila Nova / Eduardo dos Santos Tres \033[0m\n";
+    cout << "\nPressione qualquer tecla para voltar ao menu...\n";
+    getch();
+}
+
+// --------------------------- Tipos de tempo (chrono) ---------------------------
+using Clock     = std::chrono::steady_clock;
+using TimePoint = Clock::time_point;
+using ms        = std::chrono::milliseconds;
+
+enum Celulas {Vazio=0,Solido=1,Fragil=2,CelulaBomba=3,CelulaExplosao=4, PowerUps = 5, Portal = 6};
+
+
+
+// --------------------------- Structs ---------------------------
+struct Bomba {
+    int x{0}, y{0};                  // posição no mapa
+    TimePoint planted{};             // quando a C4 foi plantada
+    ms fuse{2000};                    // time da BOMBA, 2000ms
+    ms explosionDur{400};            // time da explosão: 400ms
+    int raio{1};                     // alcance em cruz, raio 1 sem powerups
+    bool ativa{false};               // pra saber se a bomba ta plantada ou não
+    int penFragil{0};                // quantos blocos fragil a explosão pode atravessar por direção
+};
+
+struct Inimigo {
+    int x, y;        // posição no mapa
+    bool vivo;       // se o inimigo está vivo
+    int direcao;     // direção atual do movimento (0-3)
+    int contador;    // contador para mudança de direção
+    bool ehEspecial; // para IA do nível difícil
+};
+
+// --------------------------- Utilitárias do bom---------------------------
+inline bool inBounds(int x, int y) { return (x >= 0 && x < 13 && y >= 0 && y < 32); }
+
+inline bool walkable(int x, int y, int (&m)[13][32]) {
+    return inBounds(x, y) && m[x][y] != 1 && m[x][y] != 2 && m[x][y] != 3;
+}
+
+// pede nome
+void pedirNome(string &nome) {
+    cout << "Digite seu Nome: ";
+    getline(cin, nome);
+}
+
+// --------------------------- Funções da sbomba/explosão ---------------------------
+
+// marca uma célula como explosão (4) até endTime
+inline void markExplosionCell(
+    int x, int y,
+    int (&m)[13][32],
+    TimePoint (&explEnd)[13][32],
+    TimePoint endTime
+) {
+    if (!inBounds(x, y)) return;
+    m[x][y] = 4;
+    explEnd[x][y] = endTime;
+}
+
+// Propaga numa direção
+void propagateDir(
+    int x, int y, int dx, int dy, int steps,
+    int (&m)[13][32],
+    TimePoint (&explEnd)[13][32],
+    TimePoint endTime,
+    bool (&willSpawnPU) [13][32],
+    int penFragil,
+    int* caixasQuebradasPtr
+) {
+    if (steps == 0) return;
+    int nx = x + dx, ny = y + dy;
+    if (!inBounds(nx, ny)) return;
+
+    if (m[nx][ny] == Solido) { // parede sólida: para
+        return;
+    }
+
+    if (m[nx][ny] == Fragil) { // frágil: destrói e para
+        if (caixasQuebradasPtr) (*caixasQuebradasPtr)++;
+        if((rand() % 100) < 15 ) { // 15% de chance de spawnar power-up
+            willSpawnPU[nx][ny] = true;
+        }
+        markExplosionCell(nx, ny, m, explEnd, endTime);
+
+        if (penFragil > 0) {
+            // a próxima célula após o frágil
+            propagateDir(nx, ny, dx, dy, steps - 1, m, explEnd, endTime, willSpawnPU, penFragil - 1, caixasQuebradasPtr);
+        }
+
+        return;
+    }
+
+    // caminho / bomba / etc.: marca e continua
+    markExplosionCell(nx, ny, m, explEnd, endTime);
+    propagateDir(nx, ny, dx, dy, steps - 1, m, explEnd, endTime, willSpawnPU,  penFragil, caixasQuebradasPtr); // RECURSÃO
+}
+
+// Propaga usando par de direção
+void propagateDir(
+    int x, int y,
+    pair<int,int> dir,
+    int (&m)[13][32],
+    TimePoint (&explEnd)[13][32],
+    TimePoint endTime,
+    int steps, // default: 1 passo (respeita alcance padrão da bomba)
+    bool (&willSpawnPU) [13][32],
+    int penFragil,
+    int* caixasQuebradasPtr
+) {
+    propagateDir(x, y, dir.first, dir.second, steps, m, explEnd, endTime, willSpawnPU, penFragil, caixasQuebradasPtr);
+}
+
+// Quando faz Kabooomm
+void detonate(
+    const Bomba &b,
+    int (&m)[13][32],
+    TimePoint (&explEnd)[13][32],
+    Inimigo inimigos[], int numInimigos,
+    bool (&willSpawnPU) [13][32],
+    int* caixasQuebradasPtr,
+    int* inimigosAbatidosPtr
+) {
+    TimePoint endTime = Clock::now() + b.explosionDur;
+
+    // centro
+    markExplosionCell(b.x, b.y, m, explEnd, endTime);
+
+    // Direções
+    propagateDir(b.x, b.y, {-1, 0}, m, explEnd, endTime, b.raio,willSpawnPU, b.penFragil, caixasQuebradasPtr); // cima
+    propagateDir(b.x, b.y, {+1, 0}, m, explEnd, endTime, b.raio, willSpawnPU, b.penFragil, caixasQuebradasPtr); // baixo
+    propagateDir(b.x, b.y, { 0,-1}, m, explEnd, endTime, b.raio, willSpawnPU, b.penFragil, caixasQuebradasPtr); // esquerda
+    propagateDir(b.x, b.y, { 0,+1}, m, explEnd, endTime, b.raio, willSpawnPU, b.penFragil, caixasQuebradasPtr); // direita
+
+    // inimigos indo de F
+    for (int i = 0; i < numInimigos; ++i) {
+        if (!inimigos[i].vivo) continue;
+        if (inBounds(inimigos[i].x, inimigos[i].y) && m[inimigos[i].x][inimigos[i].y] == 4) {
+            inimigos[i].vivo = false;
+            if (inimigosAbatidosPtr) (*inimigosAbatidosPtr)++;
+        }
+    }
+}
+
+// Limpa tudo que foi de F
+void cleanupExplosions(
+    int (&m)[13][32],
+    TimePoint (&explEnd)[13][32],
+    bool (&willSpawnPU)[13][32]
+) {
+    TimePoint now = Clock::now();
+    for (int i = 0; i < 13; ++i) {
+        for (int j = 0; j < 32; ++j) {
+            if (m[i][j] == 4 && explEnd[i][j] != TimePoint{} && now >= explEnd[i][j]) {
+
+                if (willSpawnPU[i][j]) {
+                    m[i][j] = 5;              // SPAWN do power-up
+                    willSpawnPU[i][j] = false;
+                } else {
+                    m[i][j] = 0;
+                }
+                explEnd[i][j] = TimePoint{};
+            }
+        }
+    }
+}
+
+// --------------------------- qi dos inimigos ---------------------------
+
+
+void moverAleatorio(Inimigo& inimigo, int (&m)[13][32]) {
+    int direcao = rand() % 4; // 0=Cima, 1=Baixo, 2=Esquerda, 3=Direita
+    int nx = inimigo.x;
+    int ny = inimigo.y;
+
+    switch (direcao) {
+        case 0: nx--; break; // Cima
+        case 1: nx++; break; // Baixo
+        case 2: ny--; break; // Esquerda
+        case 3: ny++; break; // Direita
+    }
+
+    // Verifica se pode mover usando a função 'walkable' do seu código
+    if (walkable(nx, ny, m)) {
+        inimigo.x = nx; // Estava 'inimigos[i].x'
+        inimigo.y = ny; // Estava 'inimigos[i].y'
+    }
+}
+
+
+void moverEmDirecaoAoJogador(Inimigo& inimigo, int (&m)[13][32], int jogadorX, int jogadorY) {
+    int deltaX = jogadorX - inimigo.x;
+    int deltaY = jogadorY - inimigo.y;
+
+    int novoX = inimigo.x;
+    int novoY = inimigo.y;
+
+    // Tenta mover no eixo com maior distância
+    if (abs(deltaX) > abs(deltaY)) {
+        novoX += (deltaX > 0) ? 1 : -1;
+    } else if (abs(deltaY) > 0) {
+        novoY += (deltaY > 0) ? 1 : -1;
+    } else if (abs(deltaX) > 0) { // Caso deltaY seja 0
+         novoX += (deltaX > 0) ? 1 : -1;
+    }
+
+    // Verifica se a nova posição é "andável"
+    if (walkable(novoX, novoY, m)) {
+        inimigo.x = novoX;
+        inimigo.y = novoY;
+    }
+    // Se o primeiro_movimento falhou, tenta o outro eixo
+    else {
+        novoX = inimigo.x; // Reseta
+        novoY = inimigo.y; // Reseta
+
+        if (abs(deltaX) > abs(deltaY)) { // Tentou X, agora tenta Y
+            if (abs(deltaY) > 0) novoY += (deltaY > 0) ? 1 : -1;
+        } else { // Tentou Y, agora tenta X
+            if (abs(deltaX) > 0) novoX += (deltaX > 0) ? 1 : -1;
+        }
+
+        // Verifica se o movimento secundário é "andável"
+        if (walkable(novoX, novoY, m)) {
+            inimigo.x = novoX;
+            inimigo.y = novoY;
+        }
+        // Se ambos falharem, o inimigo fica parado
+    }
+}
+
+
+// ====== RANKING / PERSISTÊNCIA ======
+struct ScoreEntry {
+    string data;      // "YYYY-MM-DD HH:MM:SS"
+    string jogador;
+    int pontuacao;
+    int bombas;
+    int movimentos;
+    int inimigos;
+    int caixas;
+    long long tempo;  // em segundos
+};
+
+const char* RANKING_ARQ = "ranking.csv";
+
+int calcularPontuacao(int movimentos, int bombas, int inimigos, int caixas, long long tempoSeg, bool venceu) {
+    long long p = 150LL*inimigos + 12LL*caixas - 1LL*movimentos - 5LL*bombas - 1LL*tempoSeg;
+    if (venceu) p += 250;          // bônus simples por vitória
+    if (p < 0) p = 0;
+    return (int)p;
+}
+
+string agoraStr() {
+    time_t t = time(0);
+    tm tmv;
+    tm* p = localtime(&t);
+    if (p) tmv = *p;
+    else memset(&tmv, 0, sizeof(tmv));
+
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tmv);
+    return string(buf);
+}
+
+
+void salvarPontuacao(const ScoreEntry& s) {
+    ofstream out(RANKING_ARQ, ios::app);
+    if (!out) return;
+    // CSV simples: data,jogador,score,bombas,mov,inimigos,caixas,tempo
+    out << s.data << "," << s.jogador << "," << s.pontuacao << "," << s.bombas
+        << "," << s.movimentos << "," << s.inimigos << "," << s.caixas
+        << "," << s.tempo << "\n";
+}
+
+// Lê até MAX itens pra dentro de um array simples
+int carregarRanking(ScoreEntry arr[], int MAX) {
+    ifstream in(RANKING_ARQ);
+    if (!in) return 0;
+    string linha;
+    int n = 0;
+    while (getline(in, linha) && n < MAX) {
+        if (linha.empty()) continue;
+        // split manual por vírgula
+        string cols[8]; int c = 0;
+        size_t pos = 0, last = 0;
+        while (c < 7 && (pos = linha.find(',', last)) != string::npos) {
+            cols[c++] = linha.substr(last, pos - last);
+            last = pos + 1;
+        }
+        cols[c++] = linha.substr(last);
+        if (c != 8) continue;
+
+        ScoreEntry s;
+        s.data       = cols[0];
+        s.jogador    = cols[1];
+        s.pontuacao  = atoi(cols[2].c_str());
+        s.bombas     = atoi(cols[3].c_str());
+        s.movimentos = atoi(cols[4].c_str());
+        s.inimigos   = atoi(cols[5].c_str());
+        s.caixas     = atoi(cols[6].c_str());
+        s.tempo      = atoll(cols[7].c_str());
+        arr[n++]     = s;
+    }
+    return n;
+}
+
+// ordena por: pontuação desc, tempo asc, nome asc (bubble sort simples)
+void ordenarRanking(ScoreEntry arr[], int n) {
+    for (int i = 0; i < n-1; i++) {
+        for (int j = 0; j < n-1-i; j++) {
+            bool swapar = false;
+            if (arr[j].pontuacao < arr[j+1].pontuacao) swapar = true;
+            else if (arr[j].pontuacao == arr[j+1].pontuacao) {
+                if (arr[j].tempo > arr[j+1].tempo) swapar = true;
+                else if (arr[j].tempo == arr[j+1].tempo) {
+                    if (arr[j].jogador > arr[j+1].jogador) swapar = true;
+                }
+            }
+            if (swapar) {
+                ScoreEntry tmp = arr[j];
+                arr[j] = arr[j+1];
+                arr[j+1] = tmp;
+            }
+        }
+    }
+}
+
+void mostrarRankingOrdenado() {
+    system("cls");
+    const int MAX = 200;
+    ScoreEntry arr[MAX];
+    int n = carregarRanking(arr, MAX);
+    if (n == 0) {
+        cout << "\nSem registros ainda.\n";
+        cout << "\nPressione qualquer tecla...\n"; getch(); return;
+    }
+    ordenarRanking(arr, n);
+
+    cout << "\n\033[33;1m=== RANKING (Top 20) ===\033[0m\n\n";
+    cout << "Data\t\t\tJogador\tScore\tTempo\tMov\tBomb\tInim\tCaix\n";
+    int top = (n < 20 ? n : 20);
+    for (int i = 0; i < top; i++) {
+        cout << arr[i].data << "\t" << arr[i].jogador << "\t" << arr[i].pontuacao
+             << "\t" << arr[i].tempo << "\t" << arr[i].movimentos
+             << "\t" << arr[i].bombas << "\t" << arr[i].inimigos
+             << "\t" << arr[i].caixas << "\n";
+    }
+    cout << "\nPressione qualquer tecla para voltar...\n"; getch();
+}
+
+void mostrarRegrasPontuacao() {
+    system("cls");
+    cout << "\n\033[33;1mComo a pontuacao funciona:\033[0m\n\n";
+    cout << "  +150 pontos por inimigo abatido\n";
+    cout << "  +12  pontos por caixa fragil destruida\n";
+    cout << "  -1   ponto por movimento\n";
+    cout << "  -5   pontos por bomba utilizada\n";
+    cout << "  -1   ponto por segundo de jogo\n";
+    cout << "  Bonus de vitoria: +250 pontos\n";
+    cout << "\nObs.: Nao ha score negativo (min 0). Ajuste na funcao calcularPontuacao().\n";
+    cout << "\nPressione qualquer tecla para voltar...\n"; getch();
+}
+
+
+
+// --------------------------- Jogo ---------------------------
+bool jogar(int mapa[13][32], Inimigo inimigosExternos[], int numInimigos, string nome, int dificuldade) {
+    (void)nome; // evita crash e bugs
+
+
+    int m[13][32];
+    for (int i = 0; i < 13; i++)
+        for (int j = 0; j < 32; j++)
+            m[i][j] = mapa[i][j];
+
+    Inimigo inimigos[10];
+    for (int i = 0; i < numInimigos; i++)
+        inimigos[i] = inimigosExternos[i];
+
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(out, &cursorInfo);
+    cursorInfo.bVisible = false;
+    SetConsoleCursorInfo(out, &cursorInfo);
+
+    COORD coord{0, 0};
+
+    // ---------- KABOOMM ----------
+    TimePoint explEnd[13][32] = {};
+    bool willSpawnPU[13][32] = {};
+    Bomba bomba; // (mantido, mas agora usamos um pool para permitir várias bombas)
+
+    // --- Controle de tempo ---
+    ms frameStep(16);
+    TimePoint lastFrame = Clock::now();
+    ms enemyStep(140);
+    TimePoint lastEnemyStep = Clock::now();
+
+    // --- Controle de tempo do movimento do jogador ---
+    ms moveBase(140);          // atraso base entre passos (ms)
+    ms moveMin(60);            // limite mínimo (clamp) para não “teleportar”
+    int moveStepMs = 20;       // quanto cada PU de velocidade reduz (ms)
+    TimePoint lastMove = Clock::now();
+
+    // ---- Estado do jogador e bombas ----
+    const int MAX_BOMBS = 10;
+    Bomba bombas[MAX_BOMBS];
+    for (int i=0;i<MAX_BOMBS;i++) bombas[i].ativa = false;
+
+    int x = 1, y = 2;
+    int startX = x, startY = y;
+
+    int vidas = 1;            // Vida extra
+    int raioExtra = 0;        // soma ao raio base da bomba
+    int maxBombas = 1;        // quantas bombas simultâneas pode plantar
+    int velocidade = 0;       // passos extras básicos (0/1/...)
+    int escudosExplosao = 0;    // Permitir sobreviver à bomba (consome 1 por explosão)
+    int penetraFogo = 0;        // Explosão atravessa até N blocos frágis por direção
+    bool atravessaFragil = false; // Permitir passar por blocos quebráveis (2)
+    bool chutar = false;      // chutar bombas
+    int movimentos = 0;
+    int bombasUsadas = 0;
+    int inimigosAbatidos = 0;
+    int caixasQuebradas = 0;
+
+
+
+
+    // contadores para HUD
+    int cntVida=0, cntRaio=0, cntBombas=0, cntVel=0, cntChutar=0, cntEscudo=0, cntPassaFragil=0, cntPenetra=0;
+    string ultimoPU = "";
+    TimePoint ultimoPUMsgAte{};
+
+    // tempo de jogo
+    TimePoint inicioJogo = Clock::now();
+
+    // centralização do grid (32x13)
+    auto getConsoleSize = [&] (int &W, int &H){
+        CONSOLE_SCREEN_BUFFER_INFO csbi;
+        GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi);
+        W  = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        H  = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    };
+    auto setCursor = [&] (int cx, int cy){
+        COORD c{(SHORT)cx, (SHORT)cy};
+        SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), c);
+    };
+    int W=80,H=25; getConsoleSize(W,H);
+    const int gridW=32, gridH=13;
+    int originX = (W - gridW)/2; if (originX<0) originX=0;
+    int originY = (H - gridH)/2; if (originY<0) originY=0;
+
+    // helpers bombas
+    auto bombasAtivas = [&]()->int {
+        int c=0; for(int i=0;i<MAX_BOMBS;i++) if (bombas[i].ativa) c++; return c;
+    };
+    auto idxBombaEm = [&] (int bx, int by)->int {
+        for (int i=0;i<MAX_BOMBS;i++) if (bombas[i].ativa && bombas[i].x==bx && bombas[i].y==by) return i;
+        return -1;
+    };
+    auto plantarBomba = [&] (int px, int py){
+        if (bombasAtivas() >= maxBombas) return;
+        if (!inBounds(px,py) || m[px][py]!=Vazio) return;
+        for (int i=0;i<MAX_BOMBS;i++){
+            if (!bombas[i].ativa){
+                bombas[i].ativa = true;
+                bombas[i].x = px; bombas[i].y = py;
+                bombas[i].planted = Clock::now();
+                bombas[i].raio = 1 + raioExtra; // raio base(1) + bônus
+                bombas[i].penFragil = penetraFogo;
+                m[px][py] = CelulaBomba;
+                break;
+            }
+        }
+    };
+    auto chutarBombaAdjacente = [&](){
+        if (!chutar) return; // só se o power-up "chutar" estiver ativo
+        const int DX[4] = {-1, +1, 0, 0};
+        const int DY[4] = { 0,  0,-1,+1};
+        for (int d = 0; d < 4; d++) {
+            int bx = x + DX[d], by = y + DY[d];
+            if (!inBounds(bx,by)) continue;
+            if (m[bx][by] != CelulaBomba) continue;
+            int idx = idxBombaEm(bx,by);
+            if (idx == -1) continue;
+            int nx = bx, ny = by;
+            while (true) {
+                int tx = nx + DX[d], ty = ny + DY[d];
+                if (!inBounds(tx,ty)) break;
+                if (m[tx][ty] != Vazio) break;
+                nx = tx; ny = ty;
+            }
+            if (nx == bx && ny == by) return;
+            m[bx][by] = Vazio;
+            bombas[idx].x = nx; bombas[idx].y = ny;
+            m[nx][ny] = CelulaBomba;
+            return;
+        }
+    };
+    auto checarDetonacao = [&] (){
+        for (int i=0;i<MAX_BOMBS;i++){
+            if (!bombas[i].ativa) continue;
+            if (Clock::now() - bombas[i].planted >= bombas[i].fuse) {
+                detonate(bombas[i], m, explEnd, inimigos, numInimigos, willSpawnPU, &caixasQuebradas, &inimigosAbatidos);
+                bombas[i].ativa = false;
+            }
+        }
+    };
+    auto darPowerUpAleatorio = [&] () {
+        int choice = rand() % 8; // 8 opcoes agora
+        switch (choice) {
+            case 0: vidas++; cntVida++; ultimoPU = "Vida +1"; break;
+            case 1: raioExtra++; cntRaio++; ultimoPU = "Raio da bomba +1"; break;
+            case 2: if (maxBombas<MAX_BOMBS) { maxBombas++; cntBombas++; ultimoPU = "Mais bombas"; }
+                else { vidas++; cntVida++; ultimoPU = "Vida +1"; } break;
+            case 3: velocidade++; cntVel++; ultimoPU = "Velocidade +1"; break;
+            case 4: chutar = true; cntChutar++; ultimoPU = "Chutar bombas ON"; break;
+            case 5: escudosExplosao++; cntEscudo++; ultimoPU = "Escudo contra explosao +1"; break;
+            case 6: atravessaFragil = true; cntPassaFragil++; ultimoPU = "Passar por blocos fragil ON"; break;
+            case 7: penetraFogo++; cntPenetra++; ultimoPU = "Fogo penetrante +1"; break;
+    }
+    ultimoPUMsgAte = Clock::now() + ms(1200);
+    };
+
+    auto movimentoDelayAtual = [&]()->ms {
+        ms d = moveBase - ms(velocidade * moveStepMs);
+        if (d < moveMin) d = moveMin;  // clamp
+        return d;
+    };
+
+
+    while (true) {
+    // Bloco 1: Inves do katchau vai ser Kabuumm
+    {
+        // Tick de frame (limita a ~60 FPS usando chrono)
+        {
+            TimePoint now = Clock::now();
+            if (now - lastFrame < frameStep) {
+                Sleep(1);
+                continue;
+            }
+            lastFrame = now;
+        }
+
+        // checa todas as bombas do pool
+        checarDetonacao();
+
+        cleanupExplosions(m, explEnd, willSpawnPU);
+
+        // checa morte por explosão
+       if (m[x][y] == CelulaExplosao) {
+            if (escudosExplosao > 0) {
+                escudosExplosao--;                  // consome um escudo
+                ultimoPU = "Escudo consumido";      // feedback
+                ultimoPUMsgAte = Clock::now() + ms(1000);
+                // NÃO perde vida, só “tanqueia” essa explosão
+            } else if (vidas > 0) {
+                vidas--;
+                x = startX; y = startY;
+                ultimoPU = "Perdeu 1 vida";
+                ultimoPUMsgAte = Clock::now() + ms(1000);
+                Sleep(300);
+            } else {
+                system("cls");
+                cout << "\n\n   \033[31;1mF\033[0m - voce foi atingido pela explosao!\n";
+                Sleep(2000);
+
+
+
+                TimePoint fimJogo = Clock::now();
+                long long tempoSeg = std::chrono::duration_cast<std::chrono::seconds>(fimJogo - inicioJogo).count();
+                bool venceuPartida = false;
+                int score = calcularPontuacao(movimentos, bombasUsadas, inimigosAbatidos, caixasQuebradas, tempoSeg, venceuPartida);
+
+                ScoreEntry s;
+                s.data       = agoraStr();
+                s.jogador    = nome;
+                s.pontuacao  = score;
+                s.bombas     = bombasUsadas;
+                s.movimentos = movimentos;
+                s.inimigos   = inimigosAbatidos;
+                s.caixas     = caixasQuebradas;
+                s.tempo      = tempoSeg;
+
+                salvarPontuacao(s);
+
+                cout << "\nResumo: Score=" << score
+                    << " | Tempo=" << tempoSeg << "s"
+                    << " | Mov=" << movimentos
+                    << " | Bombas=" << bombasUsadas
+                    << " | Kills=" << inimigosAbatidos
+                    << " | Caixas=" << caixasQuebradas << "\n";
+
+
+
+                return false;
+            }
+        }
+
+    }
+
+    // Bloco 2: Movimentação dos inimigos
+    {
+        if (Clock::now() - lastEnemyStep >= enemyStep) {
+            lastEnemyStep = Clock::now();
+
+            for (int i = 0; i < numInimigos; i++) {
+                if (!inimigos[i].vivo) continue;
+                inimigos[i].contador++;
+                if (inimigos[i].contador > 20 + (i + 5)) {
+                    inimigos[i].direcao = (inimigos[i].direcao + 1) % 4;
+                    inimigos[i].contador = 0;
+                }
+                int nx = inimigos[i].x, ny = inimigos[i].y;
+                switch (inimigos[i].direcao) {
+                    case 0: nx--; break;
+                    case 1: nx++; break;
+                    case 2: ny--; break;
+                    case 3: ny++; break;
+                }
+                if (inBounds(nx, ny) && m[nx][ny] == 0) {
+                    inimigos[i].x = nx;
+                    inimigos[i].y = ny;
+                }
+            }
+
+            for (int i = 0; i < numInimigos; i++) {
+                if (inimigos[i].vivo && inimigos[i].x == x && inimigos[i].y == y) {
+                    if (vidas > 0) {
+                        vidas--;
+                        x = startX; y = startY;
+                        ultimoPU = "Perdeu 1 vida";
+                        ultimoPUMsgAte = Clock::now() + ms(1000);
+                        Sleep(300);
+                    } else {
+                        system("cls");
+                        cout << "\n\n   \033[31;1mF\033[0m - um inimigo te pegou!\n";
+                        Sleep(2000);
+                        return false;
+                    }
+                }
+            }
+
+            bool todosDerrotados = true;
+            for (int i = 0; i < numInimigos; i++)
+                if (inimigos[i].vivo) todosDerrotados = false;
+            if (todosDerrotados) {
+                system("cls");
+                cout << "\n\n   \033[32;1mPARABENS\033[0m - voce derrotou todos os inimigos!\n";
+                Sleep(2000);
+
+
+
+                TimePoint fimJogo = Clock::now();
+                long long tempoSeg = std::chrono::duration_cast<std::chrono::seconds>(fimJogo - inicioJogo).count();
+                bool venceuPartida = true;
+                int score = calcularPontuacao(movimentos, bombasUsadas, inimigosAbatidos, caixasQuebradas, tempoSeg, venceuPartida);
+
+                ScoreEntry s;
+                s.data       = agoraStr();
+                s.jogador    = nome;
+                s.pontuacao  = score;
+                s.bombas     = bombasUsadas;
+                s.movimentos = movimentos;
+                s.inimigos   = inimigosAbatidos;
+                s.caixas     = caixasQuebradas;
+                s.tempo      = tempoSeg;
+
+                salvarPontuacao(s);
+
+                cout << "\nResumo: Score=" << score
+                    << " | Tempo=" << tempoSeg << "s"
+                    << " | Mov=" << movimentos
+                    << " | Bombas=" << bombasUsadas
+                    << " | Kills=" << inimigosAbatidos
+                    << " | Caixas=" << caixasQuebradas << "\n";
+
+                return true;
+            }
+        }
+    }   // <<< FECHA O BLOCO 2 CORRETAMENTE
+
+    // Bloco 3: Renderização
+    {
+        // HUD
+        SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
+        TimePoint agora = Clock::now();
+        long long segundos = std::chrono::duration_cast<std::chrono::seconds>(agora - inicioJogo).count();
+
+        cout << "\033[36;1mBOMBER\033[0m | Tempo: " << segundos << "s"
+             << " | Vidas: " << vidas
+             << " | Raio: " << (1 + raioExtra)
+             << " | Bombas: " << maxBombas
+             << " | Veloc: " << velocidade
+             << " | Chutar: " << (chutar ? "ON" : "OFF")
+             << " | Escudo: " << escudosExplosao
+             << " | PassaFragil: " << (atravessaFragil ? "ON" : "OFF")
+             << " | Penetra: " << penetraFogo
+             << " | Mov: " << movimentos
+             << " | Bombs: " << bombasUsadas
+             << " | Kills: " << inimigosAbatidos
+             << " | Caixas: " << caixasQuebradas
+             << "        \n";
+
+        if (agora < ultimoPUMsgAte && ultimoPU.size()>0) {
+            cout << "\033[33;1mPegou: " << ultimoPU << "  ("
+     << "Vida:" << cntVida << ", Raio:" << cntRaio
+     << ", Bombas:" << cntBombas << ", Veloc:" << cntVel
+     << ", Chutar:" << cntChutar
+     << ", Esc:" << cntEscudo
+     << ", Passa:" << cntPassaFragil
+     << ", Pen:" << cntPenetra
+     << ")\033[0m        \n";
+
+        } else {
+            cout << "                                                            \n";
+        }
+
+        // grid centralizado
+        for (int i = 0; i < 13; i++) {
+            COORD linhaPos{ (SHORT)originX, (SHORT)(originY + i + 2) }; // +2 linhas de HUD
+            SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), linhaPos);
+
+            for (int j = 0; j < 32; j++) {
+                bool temInimigo = false;
+                for (int k = 0; k < numInimigos; k++) {
+                    if (inimigos[k].vivo && inimigos[k].x == i && inimigos[k].y == j) {
+                        cout << "\033[31;1m" << "X" << "\033[0m";
+                        temInimigo = true;
+                        break;
+                    }
+                }
+                if (temInimigo) continue;
+                else if (i == x && j == y) { cout << "\033[32;2m" << char(36) << "\033[0m"; }
+                else {
+                    switch (m[i][j]) {
+                        case Vazio: cout << " "; break;
+                        case Solido: cout << "\033[30;2m" << char(219) << "\033[0m"; break;
+                        case Fragil: cout << "\033[34;1m" << char(178) << "\033[0m"; break;
+                        case CelulaBomba: cout << "\033[31;1m" << char(42)  << "\033[0m"; break;
+                        case CelulaExplosao: cout << "\033[93m"   << char(35)  << "\033[0m"; break;
+                        case PowerUps: cout << "\033[35;1m"   << char(63)  << "\033[0m"; break;
+			case Portal: cout << "\033[35;3m" << char(64); break; // símbolo do portal
+
+                    }
+                }
+            }
+        }
+    }
+    // Bloco 4: Teclas
+    {
+        if (_kbhit()) {
+            int teclaRaw = getch();
+            int teclaMapeada = teclaRaw;
+            TimePoint now = Clock::now();
+            ms delay = movimentoDelayAtual();
+            bool podeMover = (now - lastMove) >= delay;
+            if (teclaRaw == 0 || teclaRaw == 224) {
+                teclaMapeada = getch(); // agora é 72/80/75/77
+            }
+
+            auto tentaMover = [&](int dx, int dy){
+                int nx = x + dx, ny = y + dy;
+
+                // chutar bomba se habilitado (empurra 1 casa se possível)
+                if (inBounds(nx,ny) && m[nx][ny]==CelulaBomba && chutar) {
+                    int bx2 = nx + dx, by2 = ny + dy;
+                    if (inBounds(bx2,by2) && m[bx2][by2]==Vazio) {
+                        int idx = idxBombaEm(nx,ny);
+                        if (idx!=-1) {
+                            m[nx][ny] = Vazio;
+                            bombas[idx].x = bx2; bombas[idx].y = by2;
+                            m[bx2][by2] = CelulaBomba;
+                            x = nx; y = ny;
+                        }
+                    }
+                } else if (walkable(nx, ny, m) || (inBounds(nx,ny) && m[nx][ny]==PowerUps)
+                        || (inBounds(nx,ny) && atravessaFragil && m[nx][ny]==Fragil)) {
+                    if (x != nx || y != ny) movimentos++;   // conta movimento
+                    x = nx; y = ny;
+                }
+
+                // coleta power-up
+                if (inBounds(x,y) && m[x][y]==PowerUps) {
+                    m[x][y] = Vazio;
+                    darPowerUpAleatorio();
+                }
+            };
+
+            switch (teclaMapeada) {
+                case 72: if (podeMover) { tentaMover(-1,0); lastMove = now; } break;
+                case 80: if (podeMover) { tentaMover(+1,0); lastMove = now; } break;
+                case 75: if (podeMover) { tentaMover(0,-1); lastMove = now; } break;
+                case 77: if (podeMover) { tentaMover(0,+1); lastMove = now; } break;
+
+                case 'w': case 'W': if (podeMover) { tentaMover(-1,0); lastMove = now; } break;
+                case 's': case 'S': if (podeMover) { tentaMover(+1,0); lastMove = now; } break;
+                case 'a': case 'A': if (podeMover) { tentaMover(0,-1); lastMove = now; } break;
+                case 'd': case 'D': if (podeMover) { tentaMover(0,+1); lastMove = now; } break;
+
+                case 'c': case 'C': { chutarBombaAdjacente(); break; }
+
+                case 32: { // SPACE - planta a C4
+                    plantarBomba(x,y);
+                    bombasUsadas++;
+                    break;
+                }
+            }
+        }
+    }
+
+    } // fim do while
+}
+
+char tecla;
+
+// --------------------------- PVP ---------------------------
+bool jogarPVP(int mapa[13][32], string nome1, string nome2) {
+    int m[13][32];
+    for (int i = 0; i < 13; i++)
+        for (int j = 0; j < 32; j++)
+            m[i][j] = mapa[i][j];
+
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    CONSOLE_CURSOR_INFO cursorInfo;
+    GetConsoleCursorInfo(out, &cursorInfo);
+    cursorInfo.bVisible = false;
+    SetConsoleCursorInfo(out, &cursorInfo);
+
+    COORD coord{0, 0};
+
+    TimePoint explEnd[13][32] = {};
+    bool willSpawnPU[13][32] = {};
+
+    const int MAX_BOMBS = 10;
+    Bomba bombas1[MAX_BOMBS], bombas2[MAX_BOMBS];
+    for (int i = 0; i < MAX_BOMBS; i++) bombas1[i].ativa = bombas2[i].ativa = false;
+
+    // ---- Jogadores ----
+    int x1 = 1, y1 = 2;
+    int x2 = 11, y2 = 29;
+
+    int vidas1 = 3, vidas2 = 3;
+    int raio1 = 1, raio2 = 1;
+
+    // ===== Controle de tempo =====
+    ms moveStep(120);       // 120 ms entre passos
+    ms plantCooldown(300);  // 300 ms entre bombas
+    TimePoint lastMove1 = Clock::now(), lastMove2 = Clock::now();
+    TimePoint lastPlant1 = Clock::now(), lastPlant2 = Clock::now();
+
+    auto plantarBomba = [&](int px, int py, Bomba bombas[], int raio) {
+        if (!inBounds(px,py) || m[px][py]!=Vazio) return;
+        for (int i = 0; i < MAX_BOMBS; i++) {
+            if (!bombas[i].ativa) {
+                bombas[i].ativa = true;
+                bombas[i].x = px; bombas[i].y = py;
+                bombas[i].planted = Clock::now();
+                bombas[i].raio = raio;
+                m[px][py] = CelulaBomba;
+                break;
+            }
+        }
+    };
+
+    auto checarDetonacao = [&]() {
+        for (int i = 0; i < MAX_BOMBS; i++) {
+            if (bombas1[i].ativa && Clock::now() - bombas1[i].planted >= bombas1[i].fuse) {
+                if (inBounds(bombas1[i].x, bombas1[i].y)) m[bombas1[i].x][bombas1[i].y] = Vazio;
+                detonate(bombas1[i], m, explEnd, nullptr, 0, willSpawnPU, NULL, NULL);
+                bombas1[i].ativa = false;
+            }
+            if (bombas2[i].ativa && Clock::now() - bombas2[i].planted >= bombas2[i].fuse) {
+                if (inBounds(bombas2[i].x, bombas2[i].y)) m[bombas2[i].x][bombas2[i].y] = Vazio;
+                detonate(bombas2[i], m, explEnd, nullptr, 0, willSpawnPU, NULL, NULL);
+                bombas2[i].ativa = false;
+            }
+        }
+    };
+
+    auto movePlayer = [&](int &x, int &y, int dx, int dy, int otherX, int otherY) {
+        int nx = x + dx, ny = y + dy;
+        if (!inBounds(nx, ny)) return;
+        if (m[nx][ny] != Vazio) return;
+        if (nx == otherX && ny == otherY) return;
+        x = nx; y = ny;
+    };
+
+    while (true) {
+        checarDetonacao();
+        cleanupExplosions(m, explEnd, willSpawnPU);
+
+        // Dano por explosão
+        if (m[x1][y1] == CelulaExplosao) {
+            if (--vidas1 <= 0) { system("cls"); cout << nome2 << " venceu!\n"; Sleep(2000); return true; }
+            x1 = 1; y1 = 2;
+        }
+        if (m[x2][y2] == CelulaExplosao) {
+            if (--vidas2 <= 0) { system("cls"); cout << nome1 << " venceu!\n"; Sleep(2000); return true; }
+            x2 = 11; y2 = 29;
+        }
+
+        // Renderização
+        SetConsoleCursorPosition(GetStdHandle(STD_OUTPUT_HANDLE), coord);
+        cout << "\033[36;1mP1 (" << nome1 << ")\033[0m Vidas: " << vidas1
+             << "    \033[35;1mP2 (" << nome2 << ")\033[0m Vidas: " << vidas2 << "      \n\n";
+
+        for (int i = 0; i < 13; i++) {
+            for (int j = 0; j < 32; j++) {
+                if (i == x1 && j == y1) cout << "\033[32;1m$\033[0m";
+                else if (i == x2 && j == y2) cout << "\033[35;1m@\033[0m";
+                else {
+                    switch (m[i][j]) {
+                        case Vazio: cout << " "; break;
+                        case Solido: cout << "\033[90;1m" << char(219) << "\033[0m"; break;
+                        case Fragil: cout << "\033[34m" << char(178) << "\033[0m"; break;
+                        case CelulaBomba: cout << "\033[31;1m*\033[0m"; break;
+                        case CelulaExplosao: cout << "\033[93m#\033[0m"; break;
+                        case PowerUps: cout << "\033[35;1m?\033[0m"; break;
+                    }
+                }
+            }
+            cout << "\n";
+        }
+
+        // Movimentação
+        if (_kbhit()) {
+            tecla = getch();
+            TimePoint now = Clock::now();
+
+            switch (tecla) {
+                // P1
+                case 'w': if (now - lastMove1 >= moveStep) { movePlayer(x1, y1, -1, 0, x2, y2); lastMove1 = now; } break;
+                case 's': if (now - lastMove1 >= moveStep) { movePlayer(x1, y1, +1, 0, x2, y2); lastMove1 = now; } break;
+                case 'a': if (now - lastMove1 >= moveStep) { movePlayer(x1, y1, 0, -1, x2, y2); lastMove1 = now; } break;
+                case 'd': if (now - lastMove1 >= moveStep) { movePlayer(x1, y1, 0, +1, x2, y2); lastMove1 = now; } break;
+                case 32: // Espaço - bomba P1
+                if (now - lastPlant1 >= plantCooldown) {
+                    plantarBomba(x1, y1, bombas1, raio1);
+                    lastPlant1 = now;
+                }
+                    break;
+
+                // P2
+                case 'i': if (now - lastMove2 >= moveStep) { movePlayer(x2, y2, -1, 0, x1, y1); lastMove2 = now; } break;
+                case 'k': if (now - lastMove2 >= moveStep) { movePlayer(x2, y2, +1, 0, x1, y1); lastMove2 = now; } break;
+                case 'j': if (now - lastMove2 >= moveStep) { movePlayer(x2, y2, 0, -1, x1, y1); lastMove2 = now; } break;
+                case 'l': if (now - lastMove2 >= moveStep) { movePlayer(x2, y2, 0, +1, x1, y1); lastMove2 = now; } break;
+
+                case 'u': // bomba P2
+                    if (now - lastPlant2 >= plantCooldown) {
+                        plantarBomba(x2, y2, bombas2, raio2);
+                        lastPlant2 = now;
+                    }
+                    break;
+
+            }
+        }
+
+        if (x1 == x2 && y1 == y2) {
+            if (inBounds(x2+1,y2) && m[x2+1][y2]==Vazio) x2++;
+            else if (inBounds(x2-1,y2) && m[x2-1][y2]==Vazio) x2--;
+        }
+
+        Sleep(16);
+    }
+}
+
+
+
+// --------------------------- Main ---------------------------
+int main() {
+    srand((unsigned)time(0)); // seed global
+
+    // Adiciona o suporte a cores ANSI no Windows 10/11
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD dwMode = 0;
+    GetConsoleMode(hOut, &dwMode);
+    dwMode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    SetConsoleMode(hOut, dwMode);
+
+
+
+
+
+    // --- Mapas (COM ERROS DE PONTO CORRIGIDOS) ---
+    int mapa1[13][32] = {
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+        {1,0,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,0,2,2,2,2,2,2,2,2,0,0,1},
+        {1,0,1,0,0,1,0,0,1,2,2,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,2,2,1,0,1},
+        {1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,2,2,0,0,1},
+        {1,2,1,0,0,1,0,0,1,2,2,1,0,0,1,2,2,1,0,0,1,0,0,1,0,0,1,2,2,1,0,1}, // Corrigido
+        {1,2,0,0,0,0,0,0,0,2,2,0,0,0,0,2,2,0,0,0,0,2,2,2,2,2,2,2,2,2,0,1},
+        {1,2,1,0,0,1,0,0,1,2,2,1,0,0,1,2,2,1,0,0,1,0,0,1,2,2,1,2,2,1,0,1},
+        {1,2,0,0,0,0,2,2,0,0,0,0,0,0,0,2,2,0,0,0,0,0,0,0,2,2,0,0,0,0,0,1},
+        {1,2,1,0,0,1,2,2,1,0,0,1,0,0,1,0,0,1,0,0,1,2,2,1,0,0,1,0,0,1,0,1}, // Corrigido
+        {1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1},
+        {1,0,1,2,2,1,2,2,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,1},
+        {1,0,0,0,2,2,2,2,2,0,0,0,0,0,0,2,2,2,2,2,2,0,0,0,0,0,0,0,0,0,0,1},
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}  // Corrigido
+    };
+
+    int mapa2[13][32] = {
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+        {1,0,0,0,0,0,0,2,2,0,0,0,0,2,2,0,0,0,0,0,2,2,0,0,0,0,0,0,0,0,0,1},
+        {1,0,1,0,1,0,1,2,2,1,0,1,0,2,2,1,0,1,0,1,0,0,1,0,1,0,1,0,1,0,1,1}, // Corrigido
+        {1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1},
+        {1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,1},
+        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+        {1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,1},
+        {1,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,1},
+        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+        {1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,1},
+        {1,0,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,2,2,2,2,2,0,0,0,0,0,2,2,2,0,1},
+        {1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+    };
+
+    int mapa3[13][32] = {
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+        {1,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,1},
+        {1,0,1,0,1,0,2,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,2,0,1,0,1,0,1},
+        {1,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,1},
+        {1,0,1,0,1,0,2,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,2,0,1,0,1,0,1},
+        {1,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,1}, // Corrigido
+        {1,0,1,0,1,0,2,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,2,0,1,0,1,0,1},
+        {1,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,1},
+        {1,0,1,0,1,0,2,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,2,0,1,0,1,0,1},
+        {1,0,0,0,0,0,2,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,0,0,0,0,0,1},
+        {1,0,1,0,1,0,2,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,0,1,2,0,1,0,1,0,1},
+        {1,0,0,0,0,0,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,0,0,0,0,0,1},
+        {1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1}
+    };
+
+
+    while (true) {
+        mostrarMenu();
+
+        char opcao = getch();
+
+        if (opcao == '1') {
+            string nome;
+            pedirNome(nome);
+
+            // --- SELETOR DE DIFICULDADE ---
+            system("cls");
+            cout << "\n\n";
+            cout << "  ===============================\n";
+            cout << "    \033[36;1mESCOLHA A DIFICULDADE\033[0m\n";
+            cout << "  ===============================\n";
+            cout << "    1. Facil (IA Aleatoria)\n";
+            cout << "    2. Medio (IA 50% Persegue)\n";
+            cout << "    3. Dificil (IA 75% Persegue)\n";
+            cout << "  ===============================\n";
+            cout << "    Escolha uma opcao: ";
+
+            char escolhaDificuldade = getch();
+            int dificuldadeSelecionada;
+
+            switch(escolhaDificuldade) {
+                case '1':
+                    dificuldadeSelecionada = FACIL;
+                    break;
+                case '2':
+                    dificuldadeSelecionada = MEDIO;
+                    break;
+                case '3':
+                    dificuldadeSelecionada = DIFICIL;
+                    break;
+                default:
+                    cout << "\nOpcao invalida. Indo no Facil.\n";
+                    dificuldadeSelecionada = FACIL;
+                    Sleep(1000);
+                    break;
+            }
+            // --- FIM DO SELETOR ---
+
+bool venceu1 = false;
+bool venceu2 = false;
+bool venceu3 = false;
+
+
+
+            // --- NÍVEL 1 (FÁCIL) ---
+            Inimigo inimigosMapa1[3] = {
+                {5, 5, true, 0, 0, false},
+                {11, 1, true, 0, 0, false},
+                {11, 30, true, 0, 0, false}
+            };
+
+            while (!venceu1) {
+               system("cls");
+               cout << "Iniciando Nivel 1...\n";
+               Sleep(1500);
+
+            // (Passa a dificuldade escolhida)
+            venceu1 = jogar(mapa1, inimigosMapa1, 3, nome, dificuldadeSelecionada);
+
+    if (!venceu1) {
+        cout << "Voce morreu, " << nome << "!\n";
+        cout << "Deseja tentar novamente o Nivel 1? (S/N): ";
+        char escolha;
+        cin >> escolha;
+        if (escolha == 'N' || escolha == 'n') {
+            break; // Sai do loop e volta ao menu
+        }
+    }
+}
+
+if (!venceu1) {
+    continue; // Volta ao menu principal
+}
+
+            // --- NÍVEL 2 (MÉDIO) ---
+            Inimigo inimigosMapa2[5] = {
+                {1, 5,  true, 0, 0, false},
+                {7, 1,  true, 0, 0, false},
+                {10, 30, true, 0, 0, false},
+                {10, 7,  true, 0, 0, false},
+                {4, 24,  true, 0, 0, false}
+            };
+
+            while (!venceu2) {
+              system("cls");
+              cout << "Iniciando Nivel 2...\n";
+              Sleep(1500);
+            // (Passa a MESMA dificuldade escolhida)
+             venceu2 = jogar(mapa2, inimigosMapa2, 4, nome, dificuldadeSelecionada);
+
+    if (!venceu2) {
+        cout << "Voce morreu, " << nome << "!\n";
+        cout << "Deseja tentar novamente o Nivel 2? (S/N): ";
+        char escolha;
+        cin >> escolha;
+        if (escolha == 'N' || escolha == 'n') {
+            break; // Sai do loop e volta ao menu
+        }
+    }
+}
+            // --- NÍVEL 3 (DIFÍCIL) ---
+
+            Inimigo inimigosMapa3[7] = {
+                {1, 5,  true, 0, 0, true},
+                {6, 20, true, 0, 0, false},
+                {10, 15,true, 0, 0, false},
+                {1, 28, true, 0, 0, false},
+                {10, 2, true, 0, 0, false},
+                {8, 8,  true, 0, 0, false},
+                {8, 22, true, 0, 0, false}
+            };
+
+            while (!venceu3) {
+                 system("cls");
+                 cout << "Iniciando Nivel 3...\n";
+                 Sleep(1500);
+            // (Passa a MESMA dificuldade escolhida)
+            venceu3 = jogar(mapa3, inimigosMapa3, 5, nome, dificuldadeSelecionada);
+
+    if (!venceu3) {
+        cout << "Voce morreu, " << nome << "!\n";
+        cout << "Deseja tentar novamente o Nivel 3? (S/N): ";
+        char escolha;
+        cin >> escolha;
+        if (escolha == 'N' || escolha == 'n') {
+            break; // Sai do loop e volta ao menu
+        }
+    }
+}
+
+    if (venceu3) {
+        cout << "Parabéns, " << nome << "! Voce venceu todos os niveis!\n";
+        system("pause");
+}
+        } else if (opcao == '2') {
+            // --- Modo 2 jogadores (PVP)
+            string nome1, nome2;
+            cout << " Nome do Jogador 1: ";
+            cin.ignore();
+            getline(cin, nome1);
+            cout << " Nome do Jogador 2: ";
+            getline(cin, nome2);
+
+            system("cls");
+            int mapaPVP[13][32] = {
+                1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+                1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+                1,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,1,
+                1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+                1,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,1,
+                1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+                1,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,1,
+                1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+                1,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,1,
+                1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+                1,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,0,1,0,1,
+                1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,
+                1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+            };
+
+            jogarPVP(mapaPVP, nome1, nome2);
+            system("pause");
+
+        } else if (opcao == '3') {
+            mostrarInstrucoes();
+        } else if (opcao == '4') {
+            mostrarsobreojogo();
+
+        } else if (opcao == '5') {
+            system("cls");
+            mostrarRankingOrdenado();
+            cout << "\nPressione qualquer tecla para voltar...\n";
+            getch();
+        } else if (opcao == '6') {
+            system("cls");
+            mostrarRegrasPontuacao();
+            cout << "\nPressione qualquer tecla para voltar...\n";
+            getch();
+        } else if (opcao == '7') {
+            cout << "\nSaindo do jogo...\n";
+            Sleep(1000);
+            break;
+        } else {
+            cout << "\nOpcao invalida!\n";
+            getch();
+        }
+    }
+    return 0;
+}
